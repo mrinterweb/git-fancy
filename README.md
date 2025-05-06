@@ -5,6 +5,9 @@ It also allows you to annotate branches and quickly match branches based on eith
 
 Git fancy tracks branches by most recently used.
 
+![Kapture 2025-05-06 at 02 31 07](https://github.com/user-attachments/assets/238e45c0-e612-4d58-8bd4-543356f52730)
+
+
 ## Installation
 
 ```console
