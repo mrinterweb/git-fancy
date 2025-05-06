@@ -1,3 +1,145 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
 
-require "git/fancy"
+# Switch to git branch by matching part of a name
+
+require 'optparse'
+require 'tty-prompt'
+require 'tty-logger'
+require 'sqlite3'
+require 'git/fancy'
+
+options = {}
+
+OptionParser.new do |opts|
+  opts.banner = 'Usage: sb [options]'
+  opts.on('--delete', 'Deletes history') do
+    options[:delete_history] = true
+  end
+  opts.on('--inspect-history', 'Prints the recent_branches table') do
+    options[:inspect_history] = true
+  end
+  opts.on('-nNOTE', '--note=NOTE', 'Add a note for the current branch') do |note|
+    options[:note] = note
+  end
+  opts.on('-l', '--list', 'List 20 most recent branches') do
+    options[:list] = true
+  end
+end.parse!
+
+Signal.trap('TERM') do
+  puts 'Terminating...'
+  shutdown
+end
+
+logger = TTY::Logger.new
+
+@search_term = ARGV[0]&.strip
+search_term = @search_term
+
+@color = Pastel.new
+
+@branch_history = Git::Fancy::BranchHistory.new
+@branch_history.clean_missing_branches
+
+def prep_branch_results(results)
+  results.split("\n").map { |bn| bn.sub(/^\*/, '').strip }
+end
+
+if options[:delete_history]
+  @branch_history.purge_history!
+  logger.success @color.green('Removed branch history')
+  exit 0
+end
+
+if options[:inspect_history]
+  rows = @branch_history.inspect_history
+  require 'pp'
+  pp rows
+  exit 0
+end
+
+if options[:note]
+  @branch_history.add_branch @branch_history.current_branch
+  @branch_history.add_note options[:note]
+  logger.success @color.green('Note added')
+  exit 0
+end
+
+if options[:list]
+  branches = @branch_history.recent_branches(limit: 20, include_current: true)
+  if branches.empty?
+    logger.warn 'No recent branches found'
+    exit 0
+  end
+
+  puts 'Recent branches:'
+  branches.each do |branch|
+    time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%y-%m-%d') : nil
+    note = branch.note ? @color.yellow(branch.note) : nil
+    puts [time, branch.name, note].compact.join(' -- ')
+  end
+  exit 0
+end
+
+def find_branches(search_term)
+  if search_term
+    matching_branch_names = prep_branch_results(`git branch -l | grep -i #{search_term} | cut -f 1`)
+      .map { |bn| @branch_history.class::Branch.new(bn) }
+
+    matching_branch_notes = @branch_history.branches_matching_notes(search_term)
+    matching_branch_names.reject! { |b| matching_branch_notes.map(&:name).include?(b.name) }
+    matching_branch_notes + matching_branch_names
+  else
+    recent = @branch_history.recent_branches
+    recent.empty? ? @branch_history.local_branches : recent
+  end
+end
+
+branches = find_branches(search_term) || []
+
+def switch_branch(branch_name, location:)
+  logger = TTY::Logger.new
+  `git switch #{branch_name}`
+
+  @branch_history.add_branch(branch_name)
+  branch_note = @branch_history.branches_matching_notes(@search_term).find { |b| b.name == branch_name }&.note if @search_term
+  logger.success "Switched to #{location} branch: #{branch_name} #{branch_note ? @color.yellow(branch_note) : ''}"
+end
+
+def select_branch(branches, location: 'local', selected_branch: nil)
+  logger = TTY::Logger.new
+  prompt = TTY::Prompt.new
+
+  choices = branches.each_with_object({}) do |branch, hash|
+    time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%y-%m-%d') : nil
+    note = branch.note ? @color.yellow(branch.note) : nil
+    key = [time, branch.name, note].compact.join(' -- ')
+    hash[key] = branch.name
+  end
+
+  selection = prompt.select("Choose #{location} branch", choices.merge('none' => 'none'))
+  if selection == 'none'
+    logger.info 'Cancelling selection'
+    exit 0
+  end
+
+  switch_branch(selection, location:)
+end
+
+if branches.length == 1
+  branch_name = branches.first&.name
+  @branch_history.add_branch(branch_name)
+  #BranchHistory::Branch.new(branch_name).
+  raise 'Branch name is nil' if branch_name.nil?
+
+  switch_branch(branch_name, location: 'local')
+elsif branches.length > 1
+  logger.warn 'More than one branch name matched' unless search_term
+  select_branch(branches, location: 'local')
+else
+  logger.warn "No local branches named: '#{branches.join(', ')}' with that name were found"
+  remote_branches = prep_branch_results(`git branch -r | grep #{search_term} | cut -f 1`)
+
+  select_branch(remote_branches, location: 'remote')
+end
