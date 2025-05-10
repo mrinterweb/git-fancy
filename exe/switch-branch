@@ -30,11 +30,6 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-Signal.trap('TERM') do
-  puts 'Terminating...'
-  shutdown
-end
-
 logger = TTY::Logger.new do |config|
   config.handlers = [[:console, {
     styles: {
@@ -54,7 +49,12 @@ logger = TTY::Logger.new do |config|
   }]]
 end
 @logger = logger
-@pastel = Pastel.new
+
+Signal.trap('TERM') do
+  @logger.error 'Terminating...'
+  shutdown
+end
+
 
 @search_term = ARGV[0]&.strip
 search_term = @search_term
@@ -95,11 +95,11 @@ if options[:list]
     exit 0
   end
 
-  puts 'Recent branches:'
+  @logger.info 'Recent branches:'
   branches.each do |branch|
-    time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%y-%m-%d') : nil
+    time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%Y-%m-%d') : nil
     note = branch.note ? @color.yellow(branch.note) : nil
-    puts [time, branch.name, note].compact.join(' -- ')
+    puts [time, branch.name, note].compact.join(@color.dim(' → '))
   end
   exit 0
 end
@@ -121,15 +121,20 @@ end
 branches = find_branches(search_term) || []
 
 def switch_branch(branch_name, location:)
-  Open3.popen3("git switch #{branch_name}") do |stdin, stdout, stderr, _wait_thr|
-    err = stderr.read
-    @logger.error @pastel.red(err.split("\nerror: ").first) if err
-    exit 1
+  Open3.popen3("git switch #{branch_name}") do |stdin, stdout, stderr, wait_thr|
+    # For some reason, even succesful git switch goes to stderr
+    out = stderr.read
+    if wait_thr.value.success?
+      @logger.success @color.green(out.strip)
+    else
+      # Also for some reason errors are duplicated
+      @logger.error @color.red(out.split("\nerror: ").first.strip)
+      exit 1
+    end
   end
 
   @branch_history.add_branch(branch_name)
   branch_note = @branch_history.branches_matching_notes(@search_term).find { |b| b.name == branch_name }&.note if @search_term
-  @logger.success "Switched to #{location} branch: #{branch_name} #{branch_note ? @color.yellow(branch_note) : ''}"
 end
 
 def select_branch(branches, location: 'local', selected_branch: nil)
@@ -140,11 +145,11 @@ def select_branch(branches, location: 'local', selected_branch: nil)
     hash[key] = branch.name
   end
   prompt = TTY::Prompt.new
-  cancel_str = @pastel.dim('ctrl-c to cancel')
+  cancel_str = @color.dim('ctrl-c to cancel')
   selection = prompt.select("Choose #{location} branch #{cancel_str}", choices)
   switch_branch(selection, location:) if selection != 'none'
 rescue TTY::Reader::InputInterrupt
-  @logger.info 'Cancelling selection'
+  exit 0
 end
 
 if branches.length == 1
