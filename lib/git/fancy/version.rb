@@ -2,6 +2,6 @@
 
 module Git
   module Fancy
-    VERSION = "0.1.2"
+    VERSION = "0.1.3"
   end
 end
