@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
 
 # This is just an alias for the switch-branch script
-path = File.join(__dir__, './switch-branch')
+path = File.join(__dir__, 'switch-branch')
 eval(File.read(path)) if File.exist?(path)

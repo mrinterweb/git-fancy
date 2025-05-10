@@ -4,10 +4,13 @@
 # Switch to git branch by matching part of a name
 
 require 'optparse'
+require 'pastel'
 require 'tty-prompt'
 require 'tty-logger'
 require 'sqlite3'
 require 'git/fancy'
+require 'open3'
+require 'debug'
 
 options = {}
 
@@ -32,7 +35,26 @@ Signal.trap('TERM') do
   shutdown
 end
 
-logger = TTY::Logger.new
+logger = TTY::Logger.new do |config|
+  config.handlers = [[:console, {
+    styles: {
+      info: {
+        color: :green,
+        symbol: '→',
+        label: nil,
+        levelpad: 0,
+      },
+      warn: {
+        label: nil,
+      },
+      error: {
+        label: nil,
+      },
+    }
+  }]]
+end
+@logger = logger
+@pastel = Pastel.new
 
 @search_term = ARGV[0]&.strip
 search_term = @search_term
@@ -48,7 +70,7 @@ end
 
 if options[:delete_history]
   @branch_history.purge_history!
-  logger.success @color.green('Removed branch history')
+  @logger.success @color.green('Removed branch history')
   exit 0
 end
 
@@ -62,14 +84,14 @@ end
 if options[:note]
   @branch_history.add_branch @branch_history.current_branch
   @branch_history.add_note options[:note]
-  logger.success @color.green('Note added')
+  @logger.success @color.green('Note added')
   exit 0
 end
 
 if options[:list]
   branches = @branch_history.recent_branches(limit: 20, include_current: true)
   if branches.empty?
-    logger.warn 'No recent branches found'
+    @logger.warn 'No recent branches found'
     exit 0
   end
 
@@ -99,32 +121,30 @@ end
 branches = find_branches(search_term) || []
 
 def switch_branch(branch_name, location:)
-  logger = TTY::Logger.new
-  `git switch #{branch_name}`
+  Open3.popen3("git switch #{branch_name}") do |stdin, stdout, stderr, _wait_thr|
+    err = stderr.read
+    @logger.error @pastel.red(err.split("\nerror: ").first) if err
+    exit 1
+  end
 
   @branch_history.add_branch(branch_name)
   branch_note = @branch_history.branches_matching_notes(@search_term).find { |b| b.name == branch_name }&.note if @search_term
-  logger.success "Switched to #{location} branch: #{branch_name} #{branch_note ? @color.yellow(branch_note) : ''}"
+  @logger.success "Switched to #{location} branch: #{branch_name} #{branch_note ? @color.yellow(branch_note) : ''}"
 end
 
 def select_branch(branches, location: 'local', selected_branch: nil)
-  logger = TTY::Logger.new
-  prompt = TTY::Prompt.new
-
   choices = branches.each_with_object({}) do |branch, hash|
     time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%y-%m-%d') : nil
     note = branch.note ? @color.yellow(branch.note) : nil
     key = [time, branch.name, note].compact.join(' -- ')
     hash[key] = branch.name
   end
-
-  selection = prompt.select("Choose #{location} branch", choices.merge('none' => 'none'))
-  if selection == 'none'
-    logger.info 'Cancelling selection'
-    exit 0
-  end
-
-  switch_branch(selection, location:)
+  prompt = TTY::Prompt.new
+  cancel_str = @pastel.dim('ctrl-c to cancel')
+  selection = prompt.select("Choose #{location} branch #{cancel_str}", choices)
+  switch_branch(selection, location:) if selection != 'none'
+rescue TTY::Reader::InputInterrupt
+  @logger.info 'Cancelling selection'
 end
 
 if branches.length == 1
@@ -135,10 +155,10 @@ if branches.length == 1
 
   switch_branch(branch_name, location: 'local')
 elsif branches.length > 1
-  logger.warn 'More than one branch name matched' unless search_term
+  @logger.warn 'More than one branch name matched' if search_term
   select_branch(branches, location: 'local')
 else
-  logger.warn "No local branches named: '#{branches.join(', ')}' with that name were found"
+  @logger.warn "No local branches named: '#{branches.join(', ')}' with that name were found"
   remote_branches = prep_branch_results(`git branch -r | grep #{search_term} | cut -f 1`)
 
   select_branch(remote_branches, location: 'remote')
