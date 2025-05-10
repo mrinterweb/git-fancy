@@ -141,7 +141,7 @@ def select_branch(branches, location: 'local', selected_branch: nil)
   choices = branches.each_with_object({}) do |branch, hash|
     time = branch.last_accessed ? Time.at(branch.last_accessed).strftime('%y-%m-%d') : nil
     note = branch.note ? @color.yellow(branch.note) : nil
-    key = [time, branch.name, note].compact.join(' -- ')
+    key = [time, branch.name, note].compact.join(' → ')
     hash[key] = branch.name
   end
   prompt = TTY::Prompt.new
